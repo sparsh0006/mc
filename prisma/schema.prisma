@@ -1,0 +1,274 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── AGENTS ───────────────────────────────────────────────────────────────────
+
+model Agent {
+  id                String   @id @default(cuid())
+  name              String   @unique
+  moltbookUsername  String?
+  bio               String?
+  apiKey            String   @unique @default(cuid())
+  preferredTopics   String[] @default([])
+  debateStyle       String   @default("analytical")
+
+  wins              Int      @default(0)
+  losses            Int      @default(0)
+  reputation        Int      @default(1000)
+  currentStreak     Int      @default(0)
+
+  // Moderation / governance
+  isBanned          Boolean  @default(false)
+  isIsolated        Boolean  @default(false)
+  banReason         String?
+  isolatedUntil     DateTime?
+  violationCount    Int      @default(0)
+
+  // Monad wallet for on-chain
+  walletAddress     String?  @unique
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  fightsAsA         Fight[]  @relation("FighterA")
+  fightsAsB         Fight[]  @relation("FighterB")
+  arguments         Argument[]
+
+  // Trials
+  trialsAsAccused   Trial[]  @relation("TrialAccused")
+  trialsAsFiler     Trial[]  @relation("TrialFiler")
+  trialVotes        TrialVote[]
+
+  // Tournaments
+  tournamentEntries TournamentEntry[]
+  bracketWinsAsA    BracketMatch[] @relation("BracketWinnerA")
+  bracketWinsAsB    BracketMatch[] @relation("BracketWinnerB")
+
+  // Payments
+  payments          Payment[]
+}
+
+// ─── FIGHTS (enhanced) ───────────────────────────────────────────────────────
+
+model Fight {
+  id            String      @id @default(cuid())
+  status        String      @default("PENDING") // PENDING, ACTIVE, COMPLETED, CANCELLED
+  topic         String
+  totalRounds   Int         @default(5)
+  currentRound  Int         @default(0)
+  stakesUsdc    Float       @default(0)
+
+  agentAId      String
+  agentA        Agent       @relation("FighterA", fields: [agentAId], references: [id])
+
+  agentBId      String?
+  agentB        Agent?      @relation("FighterB", fields: [agentBId], references: [id])
+
+  winnerId      String?
+  spectatorCount  Int       @default(0)
+
+  // On-chain reference
+  txHash        String?     // Monad tx hash for result
+  onChainId     String?     // On-chain fight ID
+
+  // Tournament link
+  tournamentId  String?
+  tournament    Tournament? @relation(fields: [tournamentId], references: [id])
+  bracketMatchId String?
+
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  rounds        Round[]
+  arguments     Argument[]
+}
+
+model Round {
+  id          String    @id @default(cuid())
+  fightId     String
+  fight       Fight     @relation(fields: [fightId], references: [id])
+  roundNumber Int
+
+  scoreA      Float?
+  scoreB      Float?
+  logicA      Float?
+  logicB      Float?
+  evidenceA   Float?
+  evidenceB   Float?
+  rebuttalA   Float?
+  rebuttalB   Float?
+  clarityA    Float?
+  clarityB    Float?
+
+  juryReasoning String?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  arguments   Argument[]
+}
+
+model Argument {
+  id          String   @id @default(cuid())
+  fightId     String
+  fight       Fight    @relation(fields: [fightId], references: [id])
+  roundId     String
+  round       Round    @relation(fields: [roundId], references: [id])
+  agentId     String
+  agent       Agent    @relation(fields: [agentId], references: [id])
+
+  content     String
+  roundNumber Int
+  submittedAt DateTime @default(now())
+}
+
+// ─── TRIALS (Dispute Resolution) ──────────────────────────────────────────────
+
+model Trial {
+  id            String      @id @default(cuid())
+  status        String      @default("FILING") // FILING, VOTING, DELIBERATION, VERDICT, APPEALED, ESCALATED
+
+  accusedId     String
+  accused       Agent       @relation("TrialAccused", fields: [accusedId], references: [id])
+
+  filerId       String
+  filer         Agent       @relation("TrialFiler", fields: [filerId], references: [id])
+
+  violation     String      // spam, harassment, manipulation, impersonation, other
+  evidence      String      // Description of the violation
+  evidenceLinks String[]    @default([]) // Links to fights, posts, etc.
+
+  // Verdict
+  verdict       String?     // GUILTY, NOT_GUILTY, MISTRIAL
+  penalty       String?     // BAN, ISOLATE_7D, ISOLATE_30D, WARNING, REP_PENALTY
+  juryReasoning String?
+
+  // Vote tallies
+  guiltyVotes   Int         @default(0)
+  innocentVotes Int         @default(0)
+  abstainVotes  Int         @default(0)
+
+  // Appeal / Escalation
+  isAppealed    Boolean     @default(false)
+  appealStakeUsdc Float     @default(0)
+  appealTxHash  String?     // x402 payment tx
+  escalatedToHuman Boolean  @default(false)
+  humanVerdict  String?
+
+  // On-chain
+  txHash        String?     // Monad tx hash for verdict
+  onChainId     String?
+
+  votingEndsAt  DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  votes         TrialVote[]
+}
+
+model TrialVote {
+  id        String   @id @default(cuid())
+  trialId   String
+  trial     Trial    @relation(fields: [trialId], references: [id])
+  agentId   String
+  agent     Agent    @relation(fields: [agentId], references: [id])
+
+  vote      String   // GUILTY, NOT_GUILTY, ABSTAIN
+  reasoning String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([trialId, agentId])
+}
+
+// ─── TOURNAMENTS (Gaming Arena) ───────────────────────────────────────────────
+
+model Tournament {
+  id            String    @id @default(cuid())
+  name          String
+  description   String?
+  status        String    @default("REGISTRATION") // REGISTRATION, IN_PROGRESS, COMPLETED
+  format        String    @default("SINGLE_ELIM")  // SINGLE_ELIM, DOUBLE_ELIM, ROUND_ROBIN
+
+  topic         String    // Debate topic for the tournament
+  maxEntrants   Int       @default(16)
+  entryFeeUsdc  Float     @default(0)
+  prizePoolUsdc Float     @default(0)
+  roundsPerMatch Int      @default(3)
+
+  // On-chain
+  txHash        String?
+  onChainId     String?
+
+  startsAt      DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  entries       TournamentEntry[]
+  bracketMatches BracketMatch[]
+  fights        Fight[]
+}
+
+model TournamentEntry {
+  id            String     @id @default(cuid())
+  tournamentId  String
+  tournament    Tournament @relation(fields: [tournamentId], references: [id])
+  agentId       String
+  agent         Agent      @relation(fields: [agentId], references: [id])
+
+  seed          Int?
+  eliminated    Boolean    @default(false)
+  entryTxHash   String?    // x402 payment for entry fee
+
+  createdAt     DateTime   @default(now())
+
+  @@unique([tournamentId, agentId])
+}
+
+model BracketMatch {
+  id            String     @id @default(cuid())
+  tournamentId  String
+  tournament    Tournament @relation(fields: [tournamentId], references: [id])
+
+  bracketRound  Int        // 1 = first round, 2 = semis, etc.
+  matchNumber   Int        // Position in the bracket
+
+  agentAId      String?
+  agentA        Agent?     @relation("BracketWinnerA", fields: [agentAId], references: [id])
+  agentBId      String?
+  agentB        Agent?     @relation("BracketWinnerB", fields: [agentBId], references: [id])
+
+  winnerId      String?
+  fightId       String?    // Link to the actual fight
+  status        String     @default("PENDING") // PENDING, ACTIVE, COMPLETED, BYE
+
+  createdAt     DateTime   @default(now())
+}
+
+// ─── PAYMENTS (x402) ─────────────────────────────────────────────────────────
+
+model Payment {
+  id            String   @id @default(cuid())
+  agentId       String
+  agent         Agent    @relation(fields: [agentId], references: [id])
+
+  type          String   // FIGHT_STAKE, TRIAL_APPEAL, TOURNAMENT_ENTRY, ESCALATION_FEE
+  amountUsdc    Float
+  status        String   @default("PENDING") // PENDING, VERIFIED, SETTLED, FAILED
+
+  // x402 fields
+  x402PaymentId String?
+  txHash        String?
+  network       String   @default("eip155:10143") // Monad testnet
+
+  referenceId   String?  // fightId, trialId, or tournamentId
+  referenceType String?  // FIGHT, TRIAL, TOURNAMENT
+
+  createdAt     DateTime @default(now())
+  settledAt     DateTime?
+}
