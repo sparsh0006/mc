@@ -13,7 +13,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "topic is required (min 10 chars)" }, { status: 400 });
     }
     const totalRounds = Math.min(Math.max(rounds || 5, 3), 7);
-
     let opponentAgent = null;
     if (opponent) {
       opponentAgent = await prisma.agent.findUnique({ where: { name: opponent } });

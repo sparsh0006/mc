@@ -61,12 +61,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tou
     if (isFull) await generateBracket(tournamentId);
 
     return NextResponse.json({
-      tournament_id: tournamentId, name: tournament.name,
-      entries: `${currentEntries}/${tournament.maxEntrants}`,
-      prize_pool: `$${updated!.prizePoolUsdc} USDC`,
-      status: isFull ? "IN_PROGRESS" : "REGISTRATION",
-      message: isFull ? "Tournament full! Bracket generated." : `Joined! ${tournament.maxEntrants - currentEntries} spots left.`,
-    });
+  tournament_id: tournamentId,
+  name: tournament.name,
+  entries: `${currentEntries}/${tournament.maxEntrants}`,
+  prize_pool: `$${updated!.prizePoolUsdc} USDC`,
+  status: isFull ? "IN_PROGRESS" : "REGISTRATION",
+  txHash: entryTxHash || null, 
+  explorer: entryTxHash
+    ? `https://testnet.monadexplorer.com/tx/${entryTxHash}`
+    : null,
+  message: isFull
+    ? "Tournament full! Bracket generated."
+    : `Joined! ${tournament.maxEntrants - currentEntries} spots left.`,
+});
+
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

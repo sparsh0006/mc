@@ -1,77 +1,101 @@
 // lib/onchain.ts
-// Monad on-chain integration for transparent, verifiable records
+// Production-grade Monad integration using viem
 
-const MONAD_RPC = process.env.MONAD_RPC_URL || "https://testnet-rpc.monad.xyz";
-const CHAIN_ID = parseInt(process.env.MONAD_CHAIN_ID || "10143");
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  keccak256,
+  stringToHex,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+
+const MONAD_RPC = process.env.MONAD_RPC_URL!;
+const PRIVATE_KEY = process.env.MONAD_PRIVATE_KEY as `0x${string}`;
+const CHAIN_ID = Number(process.env.MONAD_CHAIN_ID || 10143);
+
+if (!MONAD_RPC) throw new Error("MONAD_RPC_URL missing");
+
+const account = PRIVATE_KEY
+  ? privateKeyToAccount(PRIVATE_KEY)
+  : null;
+
+const publicClient = createPublicClient({
+  transport: http(MONAD_RPC),
+});
+
+const walletClient =
+  account &&
+  createWalletClient({
+    account,
+    chain: {
+      id: CHAIN_ID,
+      name: "Monad Testnet",
+      nativeCurrency: {
+        name: "MON",
+        symbol: "MON",
+        decimals: 18,
+      },
+      rpcUrls: {
+        default: { http: [MONAD_RPC] },
+      },
+    },
+    transport: http(MONAD_RPC),
+  });
 
 interface OnChainRecord {
-  type: "FIGHT_VERDICT" | "TRIAL_VERDICT" | "TOURNAMENT_RESULT" | "AGENT_BAN" | "APPEAL_FILED";
+  type:
+    | "FIGHT_VERDICT"
+    | "TRIAL_VERDICT"
+    | "TOURNAMENT_RESULT"
+    | "AGENT_BAN"
+    | "APPEAL_FILED";
   data: Record<string, any>;
   timestamp: number;
 }
 
 /**
- * Post a record hash to Monad for transparency.
- * In production, this calls a deployed smart contract.
- * For now, we use a simple self-transfer with calldata encoding.
+ * Cryptographic keccak256 hash
  */
-export async function postToChain(record: OnChainRecord): Promise<string | null> {
-  const privateKey = process.env.MONAD_PRIVATE_KEY;
-  const walletAddress = process.env.MONAD_WALLET_ADDRESS;
+export function createRecordHash(
+  data: Record<string, any>
+): `0x${string}` {
+  const sorted = JSON.stringify(data, Object.keys(data).sort());
+  return keccak256(stringToHex(sorted));
+}
 
-  if (!privateKey || !walletAddress) {
-    console.warn("Monad keys not configured — skipping on-chain post");
+/**
+ * Post record on-chain (signed transaction)
+ */
+export async function postToChain(
+  record: OnChainRecord
+): Promise<`0x${string}` | null> {
+  if (!walletClient || !account) {
+    console.warn("⚠ On-chain disabled — missing private key");
     return null;
   }
 
   try {
-    // Encode the record as hex calldata
-    const recordJson = JSON.stringify(record);
-    const hexData = "0x" + Buffer.from(recordJson).toString("hex");
+    const json = JSON.stringify(record);
+    const dataHex = stringToHex(json);
 
-    // Build transaction
-    const nonce = await rpcCall("eth_getTransactionCount", [walletAddress, "latest"]);
-    const gasPrice = await rpcCall("eth_gasPrice", []);
+    const txHash = await walletClient.sendTransaction({
+      account,
+      to: account.address, // self-transfer anchor
+      value: BigInt(0),
+      data: dataHex,
+    });
 
-    const tx = {
-      from: walletAddress,
-      to: walletAddress, // Self-transfer with data
-      value: "0x0",
-      data: hexData,
-      nonce,
-      gasPrice,
-      gas: "0x" + Math.min(Math.max(hexData.length * 8, 21000), 500000).toString(16),
-      chainId: "0x" + CHAIN_ID.toString(16),
-    };
-
-    // Sign and send (simplified — in production use ethers.js or viem)
-    const txHash = await rpcCall("eth_sendTransaction", [tx]);
-
-    console.log(`On-chain record posted: ${txHash}`);
+    console.log("✅ On-chain record posted:", txHash);
     return txHash;
-  } catch (error) {
-    console.error("Failed to post on-chain:", error);
+  } catch (err) {
+    console.error("❌ On-chain error:", err);
     return null;
   }
 }
 
 /**
- * Create a verifiable hash of fight/trial data
- */
-export function createRecordHash(data: Record<string, any>): string {
-  const json = JSON.stringify(data, Object.keys(data).sort());
-  // Simple hash for verification (in production use keccak256)
-  let hash = 0;
-  for (let i = 0; i < json.length; i++) {
-    const char = json.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return "0x" + Math.abs(hash).toString(16).padStart(64, "0");
-}
-
-/**
- * Post a fight verdict on-chain
+ * Fight verdict
  */
 export async function postFightVerdict(fightData: {
   fightId: string;
@@ -82,7 +106,7 @@ export async function postFightVerdict(fightData: {
   totalScoreA: number;
   totalScoreB: number;
   rounds: number;
-}): Promise<string | null> {
+}) {
   return postToChain({
     type: "FIGHT_VERDICT",
     data: {
@@ -94,7 +118,7 @@ export async function postFightVerdict(fightData: {
 }
 
 /**
- * Post a trial verdict on-chain
+ * Trial verdict
  */
 export async function postTrialVerdict(trialData: {
   trialId: string;
@@ -105,7 +129,7 @@ export async function postTrialVerdict(trialData: {
   penalty: string;
   guiltyVotes: number;
   innocentVotes: number;
-}): Promise<string | null> {
+}) {
   return postToChain({
     type: "TRIAL_VERDICT",
     data: {
@@ -117,7 +141,7 @@ export async function postTrialVerdict(trialData: {
 }
 
 /**
- * Post a tournament result on-chain
+ * Tournament result
  */
 export async function postTournamentResult(tournamentData: {
   tournamentId: string;
@@ -126,7 +150,7 @@ export async function postTournamentResult(tournamentData: {
   winnerName: string;
   prizeUsdc: number;
   entrants: number;
-}): Promise<string | null> {
+}) {
   return postToChain({
     type: "TOURNAMENT_RESULT",
     data: {
@@ -138,41 +162,18 @@ export async function postTournamentResult(tournamentData: {
 }
 
 /**
- * Low-level JSON-RPC call to Monad
+ * Verify and decode stored JSON
  */
-async function rpcCall(method: string, params: any[]): Promise<any> {
-  const response = await fetch(MONAD_RPC, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: Date.now(),
-      method,
-      params,
-    }),
-  });
-
-  const data = await response.json();
-  if (data.error) throw new Error(`RPC error: ${data.error.message}`);
-  return data.result;
-}
-
-/**
- * Verify a record exists on-chain
- */
-export async function verifyOnChain(txHash: string): Promise<{
-  exists: boolean;
-  data?: OnChainRecord;
-}> {
+export async function verifyOnChain(txHash: `0x${string}`) {
   try {
-    const tx = await rpcCall("eth_getTransactionByHash", [txHash]);
+    const tx = await publicClient.getTransaction({ hash: txHash });
+
     if (!tx || !tx.input || tx.input === "0x") {
       return { exists: false };
     }
 
-    const dataHex = tx.input.slice(2);
-    const jsonStr = Buffer.from(dataHex, "hex").toString("utf-8");
-    const record = JSON.parse(jsonStr) as OnChainRecord;
+    const jsonStr = Buffer.from(tx.input.slice(2), "hex").toString("utf8");
+    const record = JSON.parse(jsonStr);
 
     return { exists: true, data: record };
   } catch {
